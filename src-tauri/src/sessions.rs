@@ -1,5 +1,19 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use std::path::PathBuf;
+
+/// Expand a leading `~` to `$HOME` so users can type `~/work/.codex` in the UI.
+pub fn expand_tilde(input: &str) -> PathBuf {
+    let s = input.trim();
+    if let Some(rest) = s.strip_prefix("~/") {
+        let home = std::env::var("HOME").unwrap_or_default();
+        return PathBuf::from(home).join(rest);
+    }
+    if s == "~" {
+        return PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    }
+    PathBuf::from(s)
+}
 
 pub const RUNNING_THRESHOLD_SECS: i64 = 60;
 pub const FINISHED_THRESHOLD_SECS: i64 = 10 * 60;
@@ -159,10 +173,13 @@ fn mode_at(events: &[(DateTime<Utc>, String)], when: DateTime<Utc>) -> Option<St
 }
 
 #[tauri::command]
-pub fn list_sessions() -> Vec<Session> {
+pub fn list_sessions(
+    codex_home: Option<String>,
+    claude_home: Option<String>,
+) -> Vec<Session> {
     let mut out = Vec::new();
-    out.extend(crate::codex::scan());
-    out.extend(crate::claude::scan());
+    out.extend(crate::codex::scan(codex_home.as_deref()));
+    out.extend(crate::claude::scan(claude_home.as_deref()));
     out.sort_by(|a, b| {
         b.display_segment
             .duration_secs
