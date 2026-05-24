@@ -4,20 +4,28 @@
   import type { Session, Source } from '$lib/types';
 
   type SortMode = 'duration' | 'recent';
-  type Tab = 'all' | Source;
+  type StatusTab = 'running' | 'finished';
+  type Tab = 'all' | Source | StatusTab;
   type Limit = 20 | 50 | 100 | 0;
-  type RefreshMs = 0 | 60_000 | 300_000 | 600_000;
+  type RefreshMs = 0 | 30_000 | 60_000 | 300_000 | 600_000;
+  type Theme = 'dark' | 'light';
 
   interface Settings {
     sortMode: SortMode;
     limit: Limit;
     refreshIntervalMs: RefreshMs;
+    codexHome: string;
+    claudeHome: string;
+    theme: Theme;
   }
 
   const DEFAULT_SETTINGS: Settings = {
     sortMode: 'duration',
     limit: 50,
     refreshIntervalMs: 300_000,
+    codexHome: '',
+    claudeHome: '',
+    theme: 'dark',
   };
 
   const STORAGE_KEY = 'seg:settings:v1';
@@ -46,8 +54,20 @@
 
   async function refresh() {
     loading = true;
-    sessions = await invoke<Session[]>('list_sessions');
-    loading = false;
+    try {
+      sessions = await invoke<Session[]>('list_sessions', {
+        codexHome: settings.codexHome.trim() || null,
+        claudeHome: settings.claudeHome.trim() || null,
+      });
+    } catch (err) {
+      console.error('Failed to refresh sessions', err);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function quitApp() {
+    await invoke('quit_app');
   }
 
   onMount(() => {
@@ -96,6 +116,9 @@
 
   const tabSessions = $derived.by(() => {
     if (tab === 'all') return sessions;
+    if (tab === 'running' || tab === 'finished') {
+      return sessions.filter((s) => s.status === tab);
+    }
     return sessions.filter((s) => s.source === tab);
   });
 
@@ -156,6 +179,7 @@
   });
 
   const runningCount = $derived(sessions.filter((s) => s.status === 'running').length);
+  const finishedCount = $derived(sessions.filter((s) => s.status === 'finished').length);
   const codexCount = $derived(sessions.filter((s) => s.source === 'codex').length);
   const claudeCount = $derived(sessions.filter((s) => s.source === 'claude').length);
   const hasFilters = $derived(selectedProjects.length + selectedModes.length > 0);
@@ -227,13 +251,14 @@
   ];
   const REFRESH_OPTIONS: { value: RefreshMs; label: string }[] = [
     { value: 0, label: 'Off' },
+    { value: 30_000, label: '30s' },
     { value: 60_000, label: '1m' },
     { value: 300_000, label: '5m' },
     { value: 600_000, label: '10m' },
   ];
 </script>
 
-<div class="shell">
+<div class="shell" data-theme={settings.theme}>
   <header class="topbar">
     <nav class="tabs">
       <button class:active={tab === 'all'} onclick={() => (tab = 'all')}>
@@ -245,19 +270,24 @@
       <button class:active={tab === 'claude'} onclick={() => (tab = 'claude')}>
         claude <span class="tab-count">{claudeCount}</span>
       </button>
+      <span class="tab-divider" aria-hidden="true"></span>
+      <button
+        class="status-tab status-running"
+        class:active={tab === 'running'}
+        onclick={() => (tab = 'running')}
+      >
+        <span class="status-dot"></span>
+        running <span class="tab-count">{runningCount}</span>
+      </button>
+      <button
+        class="status-tab status-finished"
+        class:active={tab === 'finished'}
+        onclick={() => (tab = 'finished')}
+      >
+        <span class="status-dot"></span>
+        finished <span class="tab-count">{finishedCount}</span>
+      </button>
     </nav>
-    <button
-      class="gear"
-      class:active={settingsOpen}
-      onclick={() => (settingsOpen = !settingsOpen)}
-      aria-label="Settings"
-      title="Settings"
-    >
-      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="3" />
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-      </svg>
-    </button>
   </header>
 
   {#if settingsOpen}
@@ -305,6 +335,19 @@
     {#if settingsOpen}
       <section class="settings-panel" aria-label="Settings">
         <div class="settings-row">
+          <span class="settings-label">Theme</span>
+          <div class="seg">
+            <button
+              class:active={settings.theme === 'dark'}
+              onclick={() => (settings.theme = 'dark')}
+            >Dark</button>
+            <button
+              class:active={settings.theme === 'light'}
+              onclick={() => (settings.theme = 'light')}
+            >Light</button>
+          </div>
+        </div>
+        <div class="settings-row">
           <span class="settings-label">Sort</span>
           <div class="seg">
             <button
@@ -339,10 +382,45 @@
             {/each}
           </div>
         </div>
+        <div class="settings-row">
+          <span class="settings-label">Codex</span>
+          <input
+            class="path-input"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="~/.codex"
+            bind:value={settings.codexHome}
+            onchange={refresh}
+          />
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Claude</span>
+          <input
+            class="path-input"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="~/.claude"
+            bind:value={settings.claudeHome}
+            onchange={refresh}
+          />
+        </div>
         <p class="settings-hint">
-          Auto-refresh re-scans <code>~/.codex/sessions</code> and <code>~/.claude/projects</code>.
-          Lower intervals do more disk I/O.
+          Scans <code>{settings.codexHome.trim() || '~/.codex'}/sessions</code> and
+          <code>{settings.claudeHome.trim() || '~/.claude'}/projects</code>.
+          Leave blank for defaults.
         </p>
+        <div class="settings-actions">
+          <button class="quit-btn" onclick={quitApp} title="Quit seg">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            Quit seg
+          </button>
+        </div>
       </section>
     {:else if loading && sessions.length === 0}
       {#each Array(4) as _, i (i)}
@@ -426,9 +504,28 @@
         <span class="filtered">{filtered.length} shown</span>
       {/if}
     </span>
-    <button class="refresh" onclick={refresh} title="Rescan" disabled={loading}>
-      {loading ? '·' : '↻'}
-    </button>
+    <div class="statusbar-actions">
+      <button
+        class="icon-btn gear"
+        class:active={settingsOpen}
+        onclick={() => (settingsOpen = !settingsOpen)}
+        aria-label="Settings"
+        title="Settings"
+      >
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      </button>
+      <button
+        class="icon-btn refresh"
+        class:loading
+        onclick={refresh}
+        title="Rescan"
+        aria-label={loading ? 'Refreshing sessions' : 'Rescan sessions'}
+        disabled={loading}
+      >↻</button>
+    </div>
   </footer>
 </div>
 
@@ -441,7 +538,24 @@
   }
 
   .shell {
-    /* ── design tokens (Apple Health-ish dark) ── */
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    border-radius: 16px;
+    display: grid;
+    grid-template-rows: 38px auto 1fr 32px;
+    grid-template-columns: minmax(0, 1fr);
+    overflow: hidden;
+    color: var(--text);
+    box-shadow:
+      inset 0 0 0 0.5px var(--border-soft),
+      0 24px 48px -12px rgb(0 0 0 / 0.75),
+      0 0 0 1px rgb(0 0 0 / 0.5);
+    transition: background 0.25s ease, color 0.25s ease;
+  }
+
+  /* ── theme tokens (Apple Health-ish) ─────── */
+  .shell[data-theme='dark'] {
     --bg: oklch(0.14 0 0);
     --card: oklch(0.21 0 0);
     --card-hover: oklch(0.24 0 0);
@@ -459,19 +573,48 @@
     --accent-yellow: oklch(0.82 0.13 95);
     --accent-yellow-dim: oklch(0.5 0.08 95);
     --accent-red: oklch(0.72 0.18 28);
+    --accent-red-dim: oklch(0.5 0.13 28);
 
-    position: fixed;
-    inset: 0;
-    background: var(--bg);
-    border-radius: 16px;
-    display: grid;
-    grid-template-rows: 38px auto 1fr 24px;
-    overflow: hidden;
-    color: var(--text);
-    box-shadow:
-      inset 0 0 0 0.5px var(--border-soft),
-      0 24px 48px -12px rgb(0 0 0 / 0.75),
-      0 0 0 1px rgb(0 0 0 / 0.5);
+    --overlay-soft: oklch(1 0 0 / 0.06);
+    --overlay: oklch(1 0 0 / 0.08);
+    --overlay-medium: oklch(1 0 0 / 0.12);
+    --overlay-border: oklch(1 0 0 / 0.1);
+    --neutral-mid: oklch(0.55 0 0);
+
+    --tooltip-bg: oklch(0.12 0 0 / 0.96);
+    --tooltip-text: oklch(0.97 0 0);
+    --tooltip-border: oklch(1 0 0 / 0.1);
+  }
+
+  .shell[data-theme='light'] {
+    --bg: oklch(0.98 0 0);
+    --card: oklch(0.94 0 0);
+    --card-hover: oklch(0.91 0 0);
+    --border-soft: oklch(0 0 0 / 0.06);
+
+    --text: oklch(0.18 0 0);
+    --text-dim: oklch(0.4 0 0);
+    --text-faint: oklch(0.55 0 0);
+    --text-mute: oklch(0.7 0 0);
+
+    --accent-green: oklch(0.58 0.16 145);
+    --accent-green-dim: oklch(0.78 0.08 145);
+    --accent-blue: oklch(0.55 0.16 245);
+    --accent-blue-dim: oklch(0.78 0.06 245);
+    --accent-yellow: oklch(0.68 0.14 75);
+    --accent-yellow-dim: oklch(0.82 0.07 80);
+    --accent-red: oklch(0.56 0.18 28);
+    --accent-red-dim: oklch(0.72 0.1 28);
+
+    --overlay-soft: oklch(0 0 0 / 0.05);
+    --overlay: oklch(0 0 0 / 0.07);
+    --overlay-medium: oklch(0 0 0 / 0.1);
+    --overlay-border: oklch(0 0 0 / 0.1);
+    --neutral-mid: oklch(0.6 0 0);
+
+    --tooltip-bg: oklch(0.18 0 0 / 0.96);
+    --tooltip-text: oklch(0.97 0 0);
+    --tooltip-border: oklch(1 0 0 / 0.12);
   }
 
   /* ── top bar (tabs + gear) ───────────────── */
@@ -481,6 +624,7 @@
     gap: 6px;
     padding: 0 10px;
     background: var(--bg);
+    min-width: 0;
   }
   .tabs {
     display: flex;
@@ -488,6 +632,11 @@
     gap: 2px;
     flex: 1;
     min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar {
+    display: none;
   }
   .tabs button {
     background: transparent;
@@ -504,6 +653,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    flex-shrink: 0;
   }
   .tabs button:hover {
     color: var(--text-dim);
@@ -521,29 +671,86 @@
     font-weight: 700;
     font-size: 10px;
   }
-  .gear {
-    width: 26px;
-    height: 26px;
+  .tab-divider {
+    width: 1px;
+    height: 12px;
+    background: var(--border-soft);
+    margin: 0 4px;
+    flex-shrink: 0;
+  }
+  .status-tab .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    transition: box-shadow 0.2s ease;
+  }
+  .status-tab.status-running .status-dot {
+    background: var(--accent-yellow);
+  }
+  .status-tab.status-running.active .status-dot {
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent-yellow) 18%, transparent);
+    animation: ring 2.2s ease-in-out infinite;
+  }
+  .status-tab.status-running.active {
+    color: var(--accent-yellow);
+  }
+  .status-tab.status-running.active .tab-count {
+    color: var(--accent-yellow);
+  }
+  .status-tab.status-finished .status-dot {
+    background: var(--accent-green);
+  }
+  .status-tab.status-finished.active .status-dot {
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent-green) 18%, transparent);
+  }
+  .status-tab.status-finished.active {
+    color: var(--accent-green);
+  }
+  .status-tab.status-finished.active .tab-count {
+    color: var(--accent-green);
+  }
+  .icon-btn {
+    width: 20px;
+    height: 20px;
     background: var(--card);
     border: none;
-    border-radius: 7px;
+    border-radius: 6px;
     color: var(--text-dim);
     cursor: pointer;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
+    padding: 0;
     transition:
       transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1),
       background 0.15s,
       color 0.15s;
   }
-  .gear:hover {
+  .icon-btn:hover:not(:disabled) {
     background: var(--card-hover);
     color: var(--text);
   }
-  .gear:active {
-    transform: scale(0.92);
+  .icon-btn:active:not(:disabled) {
+    transform: scale(0.88);
+  }
+  .icon-btn:disabled {
+    cursor: default;
+    opacity: 0.72;
+  }
+  .refresh {
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .refresh.loading {
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
   .gear.active {
     background: var(--card-hover);
@@ -551,7 +758,7 @@
     transform: rotate(60deg);
   }
   .gear.active:active {
-    transform: rotate(60deg) scale(0.92);
+    transform: rotate(60deg) scale(0.88);
   }
 
   /* ── filter row (replaces search) ────────── */
@@ -564,6 +771,7 @@
     overflow-y: auto;
     overflow-x: hidden;
     scrollbar-width: none;
+    min-width: 0;
   }
   .filter-row::-webkit-scrollbar {
     display: none;
@@ -636,7 +844,7 @@
     background: var(--accent-green-dim);
   }
   .filter-chip.type-mode.mode-bypassPermissions .chip-dot {
-    background: oklch(0.5 0.13 28);
+    background: var(--accent-red-dim);
   }
 
   /* selected (on) state */
@@ -751,7 +959,31 @@
   .seg button.active {
     background: var(--card-hover);
     color: var(--accent-green);
-    box-shadow: inset 0 0 0 0.5px oklch(0.82 0.18 145 / 0.35);
+    box-shadow: inset 0 0 0 0.5px color-mix(in oklch, var(--accent-green) 35%, transparent);
+  }
+  .path-input {
+    background: var(--card);
+    border: none;
+    border-radius: 8px;
+    padding: 6px 9px;
+    font: inherit;
+    font-family: 'SF Mono', Menlo, monospace;
+    font-size: 11px;
+    color: var(--text);
+    width: 100%;
+    box-shadow: inset 0 0 0 0.5px var(--border-soft);
+    transition: box-shadow 0.15s ease, background 0.15s ease;
+  }
+  .path-input:hover {
+    background: var(--card-hover);
+  }
+  .path-input:focus {
+    outline: none;
+    background: var(--card-hover);
+    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent-green) 45%, transparent);
+  }
+  .path-input::placeholder {
+    color: var(--text-mute);
   }
   .settings-hint {
     margin: 4px 2px 0;
@@ -767,14 +999,46 @@
     font-family: 'SF Mono', Menlo, monospace;
     font-size: 10px;
   }
+  .settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 4px;
+    border-top: 0.5px solid var(--border-soft);
+    margin-top: 4px;
+  }
+  .quit-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: transparent;
+    border: none;
+    color: var(--text-faint);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    padding: 6px 10px;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease;
+  }
+  .quit-btn:hover {
+    background: color-mix(in oklch, var(--accent-red) 14%, transparent);
+    color: var(--accent-red);
+  }
+  .quit-btn:active {
+    transform: scale(0.97);
+  }
 
   /* ── list ─────────────────────────────────── */
   .list {
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 4px 10px 10px;
     display: flex;
     flex-direction: column;
     gap: 10px;
+    min-width: 0;
   }
   .list.no-scroll {
     overflow: hidden;
@@ -844,10 +1108,10 @@
   @keyframes ring {
     0%,
     100% {
-      box-shadow: 0 0 0 0 oklch(0.82 0.13 95 / 0.5);
+      box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent-yellow) 50%, transparent);
     }
     50% {
-      box-shadow: 0 0 0 5px oklch(0.82 0.13 95 / 0);
+      box-shadow: 0 0 0 5px color-mix(in oklch, var(--accent-yellow) 0%, transparent);
     }
   }
 
@@ -882,8 +1146,9 @@
   /* ── segment timeline ─────────────────────── */
   .bar-track {
     position: relative;
+    width: 100%;
     height: 8px;
-    background: oklch(1 0 0 / 0.06);
+    background: var(--overlay-soft);
     border-radius: 4px;
     overflow: visible;
   }
@@ -900,7 +1165,7 @@
     bottom: 0;
     padding: 0;
     border: 0;
-    background: oklch(1 0 0 / 0.12);
+    background: var(--overlay-medium);
     border-radius: 4px;
     cursor: default;
     outline: none;
@@ -922,11 +1187,11 @@
     transform: translateX(-50%) translateY(3px);
     padding: 3px 6px;
     border-radius: 6px;
-    background: oklch(0.12 0 0 / 0.96);
+    background: var(--tooltip-bg);
     box-shadow:
-      inset 0 0 0 0.5px oklch(1 0 0 / 0.1),
+      inset 0 0 0 0.5px var(--tooltip-border),
       0 8px 18px rgb(0 0 0 / 0.35);
-    color: var(--text);
+    color: var(--tooltip-text);
     font-size: 10px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
@@ -949,16 +1214,16 @@
   }
   .status-running .bar-seg.is-display {
     background: var(--accent-yellow);
-    box-shadow: 0 0 8px oklch(0.82 0.13 95 / 0.55);
+    box-shadow: 0 0 8px color-mix(in oklch, var(--accent-yellow) 55%, transparent);
     animation: barPulse 2.4s ease-in-out infinite;
   }
   .status-finished .bar-seg.is-display {
     background: var(--accent-green);
-    box-shadow: 0 0 0 0.5px oklch(0.85 0.18 145 / 0.4);
+    box-shadow: 0 0 0 0.5px color-mix(in oklch, var(--accent-green) 40%, transparent);
   }
   .status-stopped .bar-seg.is-display {
-    background: oklch(0.55 0 0);
-    box-shadow: 0 0 0 0.5px oklch(1 0 0 / 0.08);
+    background: var(--neutral-mid);
+    box-shadow: 0 0 0 0.5px var(--overlay);
   }
   .bar-live {
     position: absolute;
@@ -968,7 +1233,7 @@
     width: 2px;
     background: var(--accent-yellow);
     border-radius: 1px;
-    box-shadow: 0 0 8px oklch(0.82 0.13 95 / 0.85);
+    box-shadow: 0 0 8px color-mix(in oklch, var(--accent-yellow) 85%, transparent);
     animation: barCursor 1.1s ease-in-out infinite;
   }
   @keyframes barPulse {
@@ -1008,7 +1273,7 @@
     letter-spacing: 0.08em;
     padding: 2px 6px;
     border-radius: 6px;
-    background: oklch(1 0 0 / 0.08);
+    background: var(--overlay);
     color: var(--text-dim);
     line-height: 1.5;
   }
@@ -1033,7 +1298,7 @@
     color: var(--accent-yellow);
   }
   .chip.goal-unknown {
-    background: oklch(1 0 0 / 0.08);
+    background: var(--overlay);
     color: var(--text-dim);
   }
   .chip.mode-bypassPermissions {
@@ -1122,12 +1387,26 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 12px;
+    padding: 0 16px 0 12px;
     background: var(--bg);
     color: var(--text-faint);
     font-size: 10.5px;
     font-variant-numeric: tabular-nums;
     font-weight: 500;
+    min-width: 0;
+  }
+  .statusbar > span {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .statusbar-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+    margin-left: 8px;
   }
   .count {
     color: var(--text);
@@ -1144,23 +1423,5 @@
   .filtered {
     color: var(--accent-green);
     font-weight: 600;
-  }
-  .refresh {
-    background: transparent;
-    border: none;
-    color: var(--text-faint);
-    cursor: pointer;
-    font-size: 14px;
-    padding: 0 4px;
-    line-height: 1;
-  }
-  .refresh:hover:not(:disabled) {
-    color: var(--text);
-  }
-  .refresh:active:not(:disabled) {
-    transform: scale(0.92);
-  }
-  .refresh:disabled {
-    cursor: default;
   }
 </style>

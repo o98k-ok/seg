@@ -9,13 +9,20 @@ use crate::sessions::{
     build_segments, pick_display_segment, status_from_age_secs, Goal, Session, Source,
 };
 
-fn sessions_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join(".codex/sessions")
+fn sessions_dir(home_override: Option<&str>) -> PathBuf {
+    let base = home_override
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(crate::sessions::expand_tilde)
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            PathBuf::from(home).join(".codex")
+        });
+    base.join("sessions")
 }
 
-pub fn scan() -> Vec<Session> {
-    let dir = sessions_dir();
+pub fn scan(home_override: Option<&str>) -> Vec<Session> {
+    let dir = sessions_dir(home_override);
     if !dir.exists() {
         return Vec::new();
     }

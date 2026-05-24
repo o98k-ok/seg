@@ -5,12 +5,17 @@ mod sessions;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{
-    menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     LogicalPosition, Manager, Position, WindowEvent,
 };
 
 static SHOULD_EXIT: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    SHOULD_EXIT.store(true, Ordering::SeqCst);
+    app.exit(0);
+}
 
 #[cfg(target_os = "macos")]
 fn configure_overlay_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
@@ -83,9 +88,6 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let quit = MenuItem::with_id(app, "quit", "Quit seg", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&quit])?;
-
             let icon = app
                 .default_window_icon()
                 .cloned()
@@ -94,14 +96,6 @@ pub fn run() {
             let _tray = TrayIconBuilder::new()
                 .icon(icon)
                 .icon_as_template(true)
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| {
-                    if event.id.as_ref() == "quit" {
-                        SHOULD_EXIT.store(true, Ordering::SeqCst);
-                        app.exit(0);
-                    }
-                })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
@@ -131,7 +125,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![sessions::list_sessions])
+        .invoke_handler(tauri::generate_handler![sessions::list_sessions, quit_app])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, event| {
