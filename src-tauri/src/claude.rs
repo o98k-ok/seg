@@ -6,7 +6,7 @@ use std::{
 use walkdir::WalkDir;
 
 use crate::sessions::{
-    build_segments, pick_display_segment, status_from_age_secs, Session, Source,
+    build_segments, pick_display_segment, status_from_age_secs, Goal, Session, Source,
 };
 
 fn projects_dir(home_override: Option<&str>) -> PathBuf {
@@ -55,6 +55,7 @@ fn parse_file(path: &Path) -> Option<Session> {
     let mut latest_mode: Option<String> = None;
     let mut current_running_mode: Option<String> = None;
     let mut has_plan_mode = false;
+    let mut latest_goal: Option<Goal> = None;
 
     let mut timestamps: Vec<DateTime<Utc>> = Vec::new();
     let mut user_timestamps: Vec<DateTime<Utc>> = Vec::new();
@@ -136,6 +137,28 @@ fn parse_file(path: &Path) -> Option<Session> {
                         user_timestamps.push(t);
                     }
                 }
+                // Claude's GOAL mode is the `/goal` slash command, recorded as a
+                // user message whose string content wraps the objective in
+                // <command-args>. Latest /goal wins.
+                if typ == "user" {
+                    if let Some(content) = v
+                        .get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_str())
+                    {
+                        if extract_tag(content, "command-name") == Some("/goal") {
+                            if let Some(obj) =
+                                extract_tag(content, "command-args").filter(|s| !s.is_empty())
+                            {
+                                latest_goal = Some(Goal {
+                                    objective: obj.to_string(),
+                                    status: None,
+                                    time_used_seconds: None,
+                                });
+                            }
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -171,7 +194,7 @@ fn parse_file(path: &Path) -> Option<Session> {
         reasoning_effort: None,
         current_mode: latest_mode,
         has_plan_mode,
-        goal: None,
+        goal: latest_goal,
         started_at,
         last_event_at,
         total_turns: turn_count,
@@ -191,6 +214,16 @@ fn parse_file(path: &Path) -> Option<Session> {
 ///   2. a CLI-injected note like `<local-command-stdout>` / `<local-command-caveat>` — not user-typed
 ///   3. a tool_result fed back to the model (array content with `tool_result` items)
 /// Only (1) should act as a segment boundary.
+/// Extract the trimmed inner text of `<tag>…</tag>` from a string, if present.
+fn extract_tag<'a>(s: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = s.find(&open)? + open.len();
+    let rest = &s[start..];
+    let end = rest.find(&close)?;
+    Some(rest[..end].trim())
+}
+
 fn is_real_user_input(v: &serde_json::Value) -> bool {
     let content = match v.get("message").and_then(|m| m.get("content")) {
         Some(c) => c,
