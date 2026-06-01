@@ -58,6 +58,7 @@ fn parse_file(path: &Path) -> Option<Session> {
     let mut latest_goal: Option<Goal> = None;
 
     let mut timestamps: Vec<DateTime<Utc>> = Vec::new();
+    let mut activity_timestamps: Vec<DateTime<Utc>> = Vec::new();
     let mut user_timestamps: Vec<DateTime<Utc>> = Vec::new();
     let mut mode_events: Vec<(DateTime<Utc>, String)> = Vec::new();
     let mut turn_count = 0usize;
@@ -108,6 +109,9 @@ fn parse_file(path: &Path) -> Option<Session> {
 
         if let Some(t) = ts {
             timestamps.push(t);
+            if is_segment_activity(typ) {
+                activity_timestamps.push(t);
+            }
             if let Some(m) = current_running_mode.clone() {
                 mode_events.push((t, m));
             }
@@ -168,6 +172,7 @@ fn parse_file(path: &Path) -> Option<Session> {
         return None;
     }
     timestamps.sort();
+    activity_timestamps.sort();
     user_timestamps.sort();
     mode_events.sort_by_key(|(t, _)| *t);
     let started_at = *timestamps.first().unwrap();
@@ -175,7 +180,14 @@ fn parse_file(path: &Path) -> Option<Session> {
     let total_duration_secs = (last_event_at - started_at).num_seconds().max(0);
     let status = status_from_age_secs((Utc::now() - last_event_at).num_seconds());
 
-    let segments = build_segments(&user_timestamps, &timestamps, &mode_events);
+    // Span/status use every timestamp, but segment boundaries use conversation
+    // events only so an idle gap before a resume isn't billed to the prior turn.
+    let boundary_ts: &[DateTime<Utc>] = if activity_timestamps.is_empty() {
+        &timestamps
+    } else {
+        &activity_timestamps
+    };
+    let segments = build_segments(&user_timestamps, boundary_ts, &mode_events);
     let (display_segment, display_segment_kind) = pick_display_segment(&segments, status);
     let segment_count = segments.len();
 
@@ -222,6 +234,17 @@ fn extract_tag<'a>(s: &'a str, tag: &str) -> Option<&'a str> {
     let rest = &s[start..];
     let end = rest.find(&close)?;
     Some(rest[..end].trim())
+}
+
+/// Whether a row counts as conversational activity for segment boundaries.
+/// Claude Code writes these bookkeeping rows at prompt-submit/resume time with the
+/// new turn's timestamp; letting them end a segment would absorb the idle gap that
+/// preceded the resume into the prior turn (e.g. an overnight pause as a 16h turn).
+fn is_segment_activity(typ: &str) -> bool {
+    !matches!(
+        typ,
+        "attachment" | "file-history-snapshot" | "permission-mode" | "summary"
+    )
 }
 
 fn is_real_user_input(v: &serde_json::Value) -> bool {

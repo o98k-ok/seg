@@ -58,6 +58,7 @@ fn parse_file(path: &Path) -> Option<Session> {
     let mut has_plan_mode = false;
 
     let mut timestamps: Vec<DateTime<Utc>> = Vec::new();
+    let mut activity_timestamps: Vec<DateTime<Utc>> = Vec::new();
     let mut user_timestamps: Vec<DateTime<Utc>> = Vec::new();
     let mut mode_events: Vec<(DateTime<Utc>, String)> = Vec::new();
     let mut turn_count = 0usize;
@@ -122,6 +123,12 @@ fn parse_file(path: &Path) -> Option<Session> {
                 }
             }
             "response_item" => {
+                // Only real conversation items define segment boundaries; metadata
+                // rows (`event_msg` like task_started, `turn_context`) are written at
+                // turn start and would otherwise absorb the idle gap before a resume.
+                if let Some(t) = ts {
+                    activity_timestamps.push(t);
+                }
                 if let Some(p) = v.get("payload") {
                     let inner = p.get("type").and_then(|x| x.as_str()).unwrap_or("");
                     if inner == "message" {
@@ -155,6 +162,7 @@ fn parse_file(path: &Path) -> Option<Session> {
         return None;
     }
     timestamps.sort();
+    activity_timestamps.sort();
     user_timestamps.sort();
     mode_events.sort_by_key(|(t, _)| *t);
     let started_at = *timestamps.first().unwrap();
@@ -162,7 +170,14 @@ fn parse_file(path: &Path) -> Option<Session> {
     let total_duration_secs = (last_event_at - started_at).num_seconds().max(0);
     let status = status_from_age_secs((Utc::now() - last_event_at).num_seconds());
 
-    let segments = build_segments(&user_timestamps, &timestamps, &mode_events);
+    // Span/status use every timestamp, but segment boundaries use conversation
+    // items only so an idle gap before a resume isn't billed to the prior turn.
+    let boundary_ts: &[DateTime<Utc>] = if activity_timestamps.is_empty() {
+        &timestamps
+    } else {
+        &activity_timestamps
+    };
+    let segments = build_segments(&user_timestamps, boundary_ts, &mode_events);
     let (display_segment, display_segment_kind) = pick_display_segment(&segments, status);
     let segment_count = segments.len();
 
