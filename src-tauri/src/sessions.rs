@@ -95,29 +95,37 @@ pub fn status_from_age_secs(age_secs: i64) -> Status {
 /// Build segments anchored to user messages. Each user message starts a new
 /// segment; the segment runs from that user-message timestamp until just before
 /// the next user message, or until the last event in the session for the final
-/// segment. `all_timestamps` and `user_timestamps` must both be sorted ascending.
+/// segment.
+///
+/// `activity_timestamps` must hold only *conversational* events (real user/
+/// assistant/tool activity), NOT bookkeeping rows the CLI writes at prompt-submit
+/// time (Claude `attachment`/`file-history-snapshot`/`permission-mode`, Codex
+/// `event_msg` like `task_started`). Those carry the next turn's timestamp but sit
+/// ~1ms before the user message, so if they were included a segment's end would
+/// snap to resume time and absorb the entire idle gap (e.g. an overnight pause
+/// showing up as a 16h "turn"). Both slices must be sorted ascending.
 pub fn build_segments(
     user_timestamps: &[DateTime<Utc>],
-    all_timestamps: &[DateTime<Utc>],
+    activity_timestamps: &[DateTime<Utc>],
     mode_events: &[(DateTime<Utc>, String)],
 ) -> Vec<Segment> {
     if user_timestamps.is_empty() {
         // No user message; fall back to a single segment spanning the whole file.
-        if all_timestamps.is_empty() {
+        if activity_timestamps.is_empty() {
             return Vec::new();
         }
-        let start = *all_timestamps.first().unwrap();
-        let end = *all_timestamps.last().unwrap();
+        let start = *activity_timestamps.first().unwrap();
+        let end = *activity_timestamps.last().unwrap();
         return vec![Segment {
             start,
             end,
             duration_secs: (end - start).num_seconds().max(0),
             mode: mode_at(mode_events, end),
-            turn_count: all_timestamps.len(),
+            turn_count: activity_timestamps.len(),
         }];
     }
 
-    let last_event = all_timestamps
+    let last_event = activity_timestamps
         .last()
         .copied()
         .unwrap_or(*user_timestamps.last().unwrap());
@@ -126,7 +134,7 @@ pub fn build_segments(
     for i in 0..user_timestamps.len() {
         let seg_start = user_timestamps[i];
         let seg_end = match user_timestamps.get(i + 1) {
-            Some(&next_user) => all_timestamps
+            Some(&next_user) => activity_timestamps
                 .iter()
                 .rev()
                 .find(|&&t| t < next_user)
@@ -134,7 +142,7 @@ pub fn build_segments(
                 .unwrap_or(seg_start),
             None => last_event.max(seg_start),
         };
-        let turn_count = all_timestamps
+        let turn_count = activity_timestamps
             .iter()
             .filter(|&&t| t >= seg_start && t <= seg_end)
             .count();
@@ -170,6 +178,47 @@ fn mode_at(events: &[(DateTime<Utc>, String)], when: DateTime<Utc>) -> Option<St
         .rev()
         .find(|(t, _)| *t <= when)
         .map(|(_, m)| m.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn t(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    // A user works for ~5min in the evening, leaves, then resumes the next morning.
+    // The evening turn must end when work stopped, not when the resume happened —
+    // the overnight gap belongs to neither turn.
+    #[test]
+    fn overnight_idle_is_not_billed_to_prior_turn() {
+        let evening = t("2026-05-25T18:42:00Z");
+        let evening_end = t("2026-05-25T18:47:00Z");
+        let morning = t("2026-05-26T11:19:01Z");
+        let morning_end = t("2026-05-26T11:20:00Z");
+
+        let users = vec![evening, morning];
+        // Boundaries are conversation events only — the resume's bookkeeping row
+        // (which lands ~1ms before `morning`) has been filtered out upstream.
+        let activity = vec![evening, evening_end, morning, morning_end];
+
+        let segs = build_segments(&users, &activity, &[]);
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].duration_secs, 5 * 60, "evening turn = real work only");
+        assert_eq!(segs[1].duration_secs, 59);
+    }
+
+    // Sanity: a genuinely long agentic run (events spread across the gap) stays long.
+    #[test]
+    fn continuous_work_stays_long() {
+        let start = t("2026-05-25T10:00:00Z");
+        let mid = t("2026-05-25T11:30:00Z");
+        let end = t("2026-05-25T13:00:00Z");
+        let segs = build_segments(&[start], &[start, mid, end], &[]);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].duration_secs, 3 * 60 * 60);
+    }
 }
 
 #[tauri::command]
