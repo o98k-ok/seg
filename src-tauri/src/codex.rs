@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use std::collections::HashSet;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -9,36 +10,73 @@ use crate::sessions::{
     build_segments, pick_display_segment, status_from_age_secs, Goal, Session, Source,
 };
 
-fn sessions_dir(home_override: Option<&str>) -> PathBuf {
-    let base = home_override
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(crate::sessions::expand_tilde)
-        .unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_default();
-            PathBuf::from(home).join(".codex")
-        });
-    base.join("sessions")
+fn sessions_dirs(home_override: Option<&str>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Some(input) = home_override.map(str::trim).filter(|s| !s.is_empty()) {
+        for home in input.split([',', ';']) {
+            let home = home.trim();
+            if !home.is_empty() {
+                push_codex_home_dirs(&mut dirs, crate::sessions::expand_tilde(home));
+            }
+        }
+    }
+
+    if dirs.is_empty() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        push_codex_home_dirs(&mut dirs, PathBuf::from(home).join(".codex"));
+    }
+
+    dirs
+}
+
+fn push_codex_home_dirs(dirs: &mut Vec<PathBuf>, home: PathBuf) {
+    push_unique_path(dirs, home.join("sessions"));
+
+    if let Ok(entries) = fs::read_dir(&home) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_dir() && path.join("sessions").is_dir() {
+                push_unique_path(dirs, path.join("sessions"));
+            }
+        }
+    }
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|p| p == &path) {
+        paths.push(path);
+    }
 }
 
 pub fn scan(home_override: Option<&str>) -> Vec<Session> {
-    let dir = sessions_dir(home_override);
-    if !dir.exists() {
-        return Vec::new();
-    }
     let mut out = Vec::new();
-    for entry in WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
-        if !entry.file_type().is_file() {
+    let mut seen_ids = HashSet::new();
+    let mut seen_paths = HashSet::new();
+
+    for dir in sessions_dirs(home_override) {
+        if !dir.exists() {
             continue;
         }
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
-            continue;
-        }
-        if let Some(s) = parse_file(path) {
-            out.push(s);
+        for entry in WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+                continue;
+            }
+            if let Some(s) = parse_file(path) {
+                if seen_ids.contains(&s.id) || seen_paths.contains(&s.file_path) {
+                    continue;
+                }
+                seen_ids.insert(s.id.clone());
+                seen_paths.insert(s.file_path.clone());
+                out.push(s);
+            }
         }
     }
+
     out
 }
 
@@ -204,10 +242,100 @@ fn parse_goal(v: &serde_json::Value) -> Option<Goal> {
 
     Some(Goal {
         objective: objective.to_string(),
-        status: v
-            .get("status")
-            .and_then(|x| x.as_str())
-            .map(String::from),
+        status: v.get("status").and_then(|x| x.as_str()).map(String::from),
         time_used_seconds: v.get("timeUsedSeconds").and_then(|x| x.as_i64()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_codex_home(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("seg-{name}-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_rollout(path: &Path, id: &str, cwd: &str, ts: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let text = format!(
+            "{{\"timestamp\":\"{ts}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{cwd}\",\"cli_version\":\"test\"}}}}\n\
+             {{\"timestamp\":\"{ts}\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\"}}}}\n"
+        );
+        fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn scans_top_level_and_profile_sessions() {
+        let home = temp_codex_home("profiles");
+        write_rollout(
+            &home.join("sessions/2026/06/07/rollout-top.jsonl"),
+            "top",
+            "/work/top",
+            "2026-06-07T01:00:00Z",
+        );
+        write_rollout(
+            &home.join("profile/sessions/2026/06/07/rollout-profile.jsonl"),
+            "profile",
+            "/work/profile",
+            "2026-06-07T02:00:00Z",
+        );
+
+        let sessions = scan(Some(home.to_str().unwrap()));
+        let ids: HashSet<_> = sessions.iter().map(|s| s.id.as_str()).collect();
+
+        assert!(ids.contains("top"));
+        assert!(ids.contains("profile"));
+
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn scans_multiple_explicit_homes_without_splitting_spaces() {
+        let home_a = temp_codex_home("multi-a");
+        let home_b = temp_codex_home("multi b");
+        let home_c = temp_codex_home("multi-c");
+
+        write_rollout(
+            &home_a.join("sessions/2026/06/07/rollout-a.jsonl"),
+            "multi-a",
+            "/work/a",
+            "2026-06-07T01:00:00Z",
+        );
+        write_rollout(
+            &home_b.join("sessions/2026/06/07/rollout-b.jsonl"),
+            "multi-b",
+            "/work/b",
+            "2026-06-07T02:00:00Z",
+        );
+        write_rollout(
+            &home_c.join("sessions/2026/06/07/rollout-c.jsonl"),
+            "multi-c",
+            "/work/c",
+            "2026-06-07T03:00:00Z",
+        );
+
+        let input = format!(
+            "{}, {}; {}",
+            home_a.to_string_lossy(),
+            home_b.to_string_lossy(),
+            home_c.to_string_lossy()
+        );
+        let sessions = scan(Some(&input));
+        let ids: HashSet<_> = sessions.iter().map(|s| s.id.as_str()).collect();
+
+        assert!(ids.contains("multi-a"));
+        assert!(ids.contains("multi-b"));
+        assert!(ids.contains("multi-c"));
+
+        fs::remove_dir_all(home_a).unwrap();
+        fs::remove_dir_all(home_b).unwrap();
+        fs::remove_dir_all(home_c).unwrap();
+    }
 }

@@ -481,9 +481,9 @@
           />
         </div>
         <p class="settings-hint">
-          Scans <code>{settings.codexHome.trim() || '~/.codex'}/sessions</code> and
+          Scans <code>{settings.codexHome.trim() || '~/.codex'}</code> and
           <code>{settings.claudeHome.trim() || '~/.claude'}/projects</code>.
-          Leave blank for defaults.
+          Separate multiple Codex homes with comma or semicolon.
         </p>
         <div class="settings-actions">
           <button class="quit-btn" onclick={quitApp} title="Quit seg">
@@ -504,7 +504,7 @@
       <div class="empty">
         {#if sessions.length === 0}
           <span class="empty-line"><code>~/.codex/sessions</code> is empty.</span>
-          <span class="empty-line dim">Run a Codex session and reopen.</span>
+          <span class="empty-line dim">Run a Codex session or set a custom home.</span>
         {:else if hasFilters}
           <span class="empty-line">No sessions match the selected tags.</span>
           <button class="empty-action" onclick={clearFilters}>Clear filters</button>
