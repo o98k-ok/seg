@@ -11,6 +11,8 @@ macOS 菜单栏小工具，用一条时间轴可视化你最近的 [Codex CLI](h
 
 只读，不修改这些文件。
 
+Codex home 设置留空时使用 `~/.codex`。需要同时扫描多个 Codex home 时，用逗号或分号分隔；路径里的空格可以直接保留，不要加引号。
+
 ## 视图说明
 
 每张卡片代表一次会话：
@@ -86,7 +88,7 @@ src/                  SvelteKit 前端（一个 +page.svelte）
 src-tauri/src/
   ├── lib.rs          托盘 + 窗口 + macOS 集成
   ├── sessions.rs     段/状态/Session 类型，build_segments 核心逻辑
-  ├── codex.rs        扫描 ~/.codex/sessions 的解析器
+  ├── codex.rs        扫描 Codex homes / sessions 的解析器
   └── claude.rs       扫描 ~/.claude/projects 的解析器
 ```
 
